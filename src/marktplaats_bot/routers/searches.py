@@ -1,10 +1,10 @@
-import re
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..database import get_db
+from ..database import AsyncSessionLocal, get_db
+from ..feedback import parse_feedback as _parse_feedback_full
 from ..models import Search, Result, Feedback
 from ..schemas import SearchCreate, SearchResponse, ResultResponse, FeedbackCreate, FeedbackResponse
 
@@ -17,13 +17,6 @@ RANKING_MODES = {
     "popularity": lambda r: -r.photo_count,
     "distance": lambda r: r.distance_km if r.distance_km is not None else float("inf"),
 }
-
-# Validate listing_id — only numeric IDs from marktplaats URLs
-_LISTING_ID_RE = re.compile(r"^\d+$")
-
-
-def _validate_listing_id(listing_id: str) -> bool:
-    return bool(_LISTING_ID_RE.match(listing_id))
 
 
 @router.get("", response_model=list[SearchResponse])
@@ -76,6 +69,13 @@ async def create_search(payload: SearchCreate, db: AsyncSession = Depends(get_db
     db.add(search)
     await db.commit()
     await db.refresh(search)
+
+    # Trigger immediate scrape in background
+    try:
+        from ..scheduler import trigger_immediate_run
+        await trigger_immediate_run(search.id, AsyncSessionLocal)
+    except Exception:
+        pass  # Non-fatal — scheduled runs will pick it up
     return SearchResponse(
         id=search.id,
         query_text=search.query_text,
@@ -182,8 +182,7 @@ async def submit_feedback(
     if not search:
         raise HTTPException(status_code=404, detail="Search not found")
 
-    # Inline lightweight feedback parser (full implementation in task-010)
-    parsed = _parse_feedback(payload.text)
+    parsed = _parse_feedback_full(payload.text)
 
     # Apply parsed changes to search
     if "max_budget" in parsed:
@@ -206,6 +205,14 @@ async def submit_feedback(
             if b not in brands:
                 brands.append(b)
         search.excluded_brands = brands
+    if "add_required_specs" in parsed:
+        specs = search.required_specs
+        for s in parsed["add_required_specs"]:
+            if s not in specs:
+                specs.append(s)
+        search.required_specs = specs
+    if "max_age_years" in parsed:
+        search.max_age_years = parsed["max_age_years"]
 
     fb = Feedback(search_id=search_id, text=payload.text)
     fb.parsed_changes = parsed
@@ -222,28 +229,3 @@ async def submit_feedback(
     )
 
 
-def _parse_feedback(text: str) -> dict:
-    """Lightweight rule-based feedback parser. Full version in task-010."""
-    changes: dict = {}
-    lower = text.lower()
-
-    # Budget: "budget 500", "max 300 euro", "niet meer dan 200"
-    budget_match = re.search(r"(?:budget|max(?:imum)?|niet meer dan|under|onder)\s*[€$]?\s*(\d+(?:[.,]\d+)?)", lower)
-    if budget_match:
-        changes["max_budget"] = float(budget_match.group(1).replace(",", "."))
-
-    # Distance/radius: "within 10 km", "binnen 15 km", "radius 20"
-    radius_match = re.search(r"(?:within|binnen|radius|afstand)\s*(\d+)\s*km", lower)
-    if radius_match:
-        changes["radius_km"] = int(radius_match.group(1))
-
-    # Business flag
-    if any(p in lower for p in ["te veel bedrijf", "too many business", "exclude business", "geen bedrijven", "only private", "alleen particulier"]):
-        changes["exclude_business"] = True
-
-    # Relevance threshold
-    if any(p in lower for p in ["not relevant", "niet relevant", "lower threshold", "lagere drempel"]):
-        threshold = changes.get("relevance_threshold", 60)
-        changes["relevance_threshold"] = max(0, threshold - 10)
-
-    return changes

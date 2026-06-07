@@ -16,6 +16,7 @@ def get_engine():
 
 engine = get_engine()
 AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+SessionLocal = AsyncSessionLocal  # alias for scheduler
 
 
 class Base(DeclarativeBase):

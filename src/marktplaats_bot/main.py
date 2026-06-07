@@ -5,9 +5,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from .database import init_db
+from .database import SessionLocal, init_db
 from .routers import searches
 from .schemas import HealthResponse
+from .scheduler import start_scheduler, stop_scheduler
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
@@ -18,7 +19,9 @@ async def lifespan(app: FastAPI):
     logger.info("Starting marktplaats-bot, initialising database...")
     await init_db()
     logger.info("Database ready.")
+    start_scheduler(SessionLocal)
     yield
+    stop_scheduler()
     logger.info("Shutting down.")
 
 
