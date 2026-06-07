@@ -1,0 +1,26 @@
+services:
+  marktplaats-bot:
+    build: .
+    container_name: marktplaats-bot
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3002:3002"
+    env_file:
+      - .env
+    volumes:
+      - marktplaats-data:/app/data
+    networks:
+      - tools-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  marktplaats-data:
+
+networks:
+  tools-net:
+    external: true
