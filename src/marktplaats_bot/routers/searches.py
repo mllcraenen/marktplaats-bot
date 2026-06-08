@@ -173,6 +173,15 @@ async def mark_seen(search_id: int, result_id: int, db: AsyncSession = Depends(g
     return {"ok": True}
 
 
+@router.post("/run-now", status_code=202)
+async def trigger_run_all():
+    """Trigger an immediate scrape run for all active searches."""
+    import asyncio
+    from ..scheduler import run_all_searches
+    asyncio.create_task(run_all_searches(AsyncSessionLocal))
+    return {"status": "triggered"}
+
+
 @router.post("/{search_id}/feedback", response_model=FeedbackResponse, status_code=201)
 async def submit_feedback(
     search_id: int, payload: FeedbackCreate, db: AsyncSession = Depends(get_db)

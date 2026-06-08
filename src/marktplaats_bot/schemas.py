@@ -1,6 +1,7 @@
+import json
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class SearchCreate(BaseModel):
@@ -55,11 +56,25 @@ class ResultResponse(BaseModel):
     relevance_score: int
     deal_score: int
     quality_score: int
+    ai_score: Optional[int]
+    ai_flags: Optional[list[str]]
     notified: bool
     seen: bool
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @field_validator("ai_flags", mode="before")
+    @classmethod
+    def parse_ai_flags(cls, v):
+        if isinstance(v, str):
+            return json.loads(v)
+        return v
+
+
+class VerdictCreate(BaseModel):
+    ai_score: int = Field(..., ge=0, le=10)
+    ai_flags: list[str] = []
 
 
 class FeedbackCreate(BaseModel):

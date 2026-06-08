@@ -74,6 +74,8 @@ class Result(Base):
     relevance_score: Mapped[int] = mapped_column(Integer, default=0)
     deal_score: Mapped[int] = mapped_column(Integer, default=0)
     quality_score: Mapped[int] = mapped_column(Integer, default=0)
+    ai_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    ai_flags: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON array
     notified: Mapped[bool] = mapped_column(Boolean, default=False)
     seen: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
