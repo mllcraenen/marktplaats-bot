@@ -105,6 +105,7 @@ async def run_single_search(search_id: int, db_factory) -> None:
             price_history=price_history,
         )
 
+        import json as _json
         row = Result(
             search_id=search_id,
             listing_id=listing.listing_id,
@@ -119,6 +120,8 @@ async def run_single_search(search_id: int, db_factory) -> None:
             relevance_score=result_obj.relevance_score,
             deal_score=result_obj.deal_score,
             quality_score=result_obj.quality_score,
+            is_bidding=listing.is_bidding,
+            image_urls=_json.dumps(listing.image_urls) if listing.image_urls else None,
         )
         new_results.append(row)
 

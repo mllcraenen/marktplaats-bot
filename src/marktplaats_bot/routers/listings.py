@@ -25,13 +25,14 @@ async def post_verdict(
     payload: VerdictCreate,
     db: AsyncSession = Depends(get_db),
 ):
-    """Store an AI verdict (score + flags) for a result."""
+    """Store an AI verdict (score, flags, reason) for a result."""
     q = await db.execute(select(Result).where(Result.id == result_id))
     result = q.scalar_one_or_none()
     if not result:
         raise HTTPException(status_code=404, detail="Result not found")
     result.ai_score = payload.ai_score
     result.ai_flags = json.dumps(payload.ai_flags)
+    result.ai_reason = payload.ai_reason
     await db.commit()
     await db.refresh(result)
     return ResultResponse.model_validate(result)

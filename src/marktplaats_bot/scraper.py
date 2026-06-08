@@ -42,6 +42,8 @@ class ScrapedListing:
     description: str = ""
     seller_type: str = "unknown"
     seller_name: str = ""
+    is_bidding: bool = False
+    image_urls: list = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +63,13 @@ def _build_search_url(
     if max_price is not None:
         url += f"|priceTo:{int(max_price)}"
     return url
+
+
+def _is_bidding_price(text: str) -> bool:
+    if not text:
+        return False
+    lower = text.lower().strip()
+    return "bieden" in lower or "bod" in lower
 
 
 def _parse_price(text: str) -> Optional[float]:
@@ -237,10 +246,13 @@ async def _extract_single_listing(el) -> Optional[ScrapedListing]:
 
     # --- Price ---
     price: Optional[float] = None
+    is_bidding = False
     for price_sel in ["[class*='price']", "[class*='Price']", "[data-testid*='price']"]:
         price_el = await el.query_selector(price_sel)
         if price_el:
-            price = _parse_price(await price_el.inner_text())
+            raw_price_text = await price_el.inner_text()
+            is_bidding = _is_bidding_price(raw_price_text)
+            price = _parse_price(raw_price_text)
             break
 
     # --- Distance ---
@@ -255,6 +267,11 @@ async def _extract_single_listing(el) -> Optional[ScrapedListing]:
     # --- Photos ---
     imgs = await el.query_selector_all("img[src]:not([src=''])")
     photo_count = max(0, len(imgs))
+    image_urls: list[str] = []
+    for img in imgs[:5]:
+        src = await img.get_attribute("src") or await img.get_attribute("data-src") or ""
+        if src and src.startswith("http") and "marktplaats" in src:
+            image_urls.append(src)
 
     # --- Seller type (coarse; detailed analysis in task-009) ---
     seller_type = "unknown"
@@ -291,6 +308,8 @@ async def _extract_single_listing(el) -> Optional[ScrapedListing]:
         description=description,
         seller_type=seller_type,
         seller_name=seller_name,
+        is_bidding=is_bidding,
+        image_urls=image_urls,
     )
 
 
