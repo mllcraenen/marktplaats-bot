@@ -59,6 +59,21 @@ async def create_search(payload: SearchCreate, db: AsyncSession = Depends(get_db
     return _build_search_response(search, 0)
 
 
+@router.get("/unenhanced", response_model=list[SearchResponse])
+async def get_unenhanced(db: AsyncSession = Depends(get_db)):
+    """Return active searches that have not yet had their query enhanced by AI."""
+    result = await db.execute(
+        select(Search).where(Search.active == True, Search.query_enhanced == False)
+    )
+    searches = result.scalars().all()
+    out = []
+    for s in searches:
+        count_result = await db.execute(select(func.count(Result.id)).where(Result.search_id == s.id))
+        count = count_result.scalar() or 0
+        out.append(_build_search_response(s, count))
+    return out
+
+
 @router.get("/{search_id}", response_model=SearchResponse)
 async def get_search(search_id: int, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Search).where(Search.id == search_id))
@@ -178,21 +193,6 @@ async def submit_feedback(
         parsed_changes=fb.parsed_changes,
         created_at=fb.created_at,
     )
-
-
-@router.get("/unenhanced", response_model=list[SearchResponse])
-async def get_unenhanced(db: AsyncSession = Depends(get_db)):
-    """Return active searches that have not yet had their query enhanced by AI."""
-    result = await db.execute(
-        select(Search).where(Search.active == True, Search.query_enhanced == False)
-    )
-    searches = result.scalars().all()
-    out = []
-    for s in searches:
-        count_result = await db.execute(select(func.count(Result.id)).where(Result.search_id == s.id))
-        count = count_result.scalar() or 0
-        out.append(_build_search_response(s, count))
-    return out
 
 
 @router.patch("/{search_id}/query", response_model=SearchResponse)
