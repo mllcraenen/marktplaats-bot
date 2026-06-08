@@ -1,10 +1,11 @@
 import json
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
-from ..models import Result
+from ..models import Result, Search
 from ..schemas import ResultResponse, VerdictCreate
 
 router = APIRouter(prefix="/api/listings", tags=["listings"])
@@ -33,6 +34,13 @@ async def post_verdict(
     result.ai_score = payload.ai_score
     result.ai_flags = json.dumps(payload.ai_flags)
     result.ai_reason = payload.ai_reason
+
+    # Update the search's last_analyzed_at timestamp
+    sq = await db.execute(select(Search).where(Search.id == result.search_id))
+    search = sq.scalar_one_or_none()
+    if search:
+        search.last_analyzed_at = datetime.utcnow()
+
     await db.commit()
     await db.refresh(result)
     return ResultResponse.model_validate(result)

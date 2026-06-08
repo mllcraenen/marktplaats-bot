@@ -127,14 +127,31 @@ async def run_single_search(search_id: int, db_factory) -> None:
 
     if new_results:
         async with db_factory() as db:
-            # Update nl/en keywords
+            from sqlalchemy.exc import IntegrityError
+
             r = await db.execute(select(Search).where(Search.id == search_id))
             s = r.scalar_one_or_none()
             if s:
                 s.nl_keywords = nl_query
                 s.en_keywords = en_query
                 s.last_run_at = datetime.utcnow()
-                db.add_all(new_results)
+                for row in new_results:
+                    db.add(row)
+                    try:
+                        await db.flush()
+                    except IntegrityError:
+                        await db.rollback()
+                        logger.debug(
+                            "Search %d: duplicate listing_id %s, skipping",
+                            search_id, row.listing_id,
+                        )
+                        # Re-attach search update after rollback
+                        r2 = await db.execute(select(Search).where(Search.id == search_id))
+                        s = r2.scalar_one_or_none()
+                        if s:
+                            s.nl_keywords = nl_query
+                            s.en_keywords = en_query
+                            s.last_run_at = datetime.utcnow()
                 await db.commit()
 
         logger.info(
