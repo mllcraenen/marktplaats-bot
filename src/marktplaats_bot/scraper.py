@@ -343,14 +343,16 @@ async def scrape_bilingual(
     postcode: str = "3027CM",
     radius_km: int = 25,
     max_price: Optional[float] = None,
+    en_query_override: Optional[str] = None,
 ) -> tuple[list[ScrapedListing], str, str]:
     """
     Translate *query* to both NL and EN, scrape both, deduplicate by listing_id.
 
-    Returns ``(unique_listings, nl_query, en_query)``.
+    When en_query_override is provided (AI-enhanced), use it directly instead of
+    auto-translating. Returns ``(unique_listings, nl_query, en_query)``.
     """
     nl_query = translate_query(query, "nl")
-    en_query = translate_query(query, "en")
+    en_query = en_query_override if en_query_override else translate_query(query, "en")
 
     logger.info("Bilingual scrape — NL: '%s'  EN: '%s'", nl_query, en_query)
 
