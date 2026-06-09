@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import AsyncSessionLocal, get_db
 from ..feedback import parse_feedback as _parse_feedback_full
 from ..models import Search, Result, Feedback
-from ..schemas import SearchCreate, SearchQueryPatch, SearchResponse, ResultResponse, FeedbackCreate, FeedbackResponse
+from ..schemas import SearchCreate, SearchQueryPatch, SearchResponse, ResultResponse, FeedbackCreate, FeedbackPatch, FeedbackResponse
 
 router = APIRouter(prefix="/api/searches", tags=["searches"])
 
@@ -27,7 +27,12 @@ async def list_searches(db: AsyncSession = Depends(get_db)):
     for s in searches:
         count_result = await db.execute(select(func.count(Result.id)).where(Result.search_id == s.id))
         count = count_result.scalar() or 0
-        out.append(_build_search_response(s, count))
+        fb_result = await db.execute(
+            select(func.count(Feedback.id), func.max(Feedback.created_at))
+            .where(Feedback.search_id == s.id)
+        )
+        fb_count, last_fb_at = fb_result.one()
+        out.append(_build_search_response(s, count, int(fb_count or 0), last_fb_at))
     return out
 
 
@@ -82,7 +87,12 @@ async def get_search(search_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Search not found")
     count_result = await db.execute(select(func.count(Result.id)).where(Result.search_id == search_id))
     count = count_result.scalar() or 0
-    return _build_search_response(search, count)
+    fb_result = await db.execute(
+        select(func.count(Feedback.id), func.max(Feedback.created_at))
+        .where(Feedback.search_id == search_id)
+    )
+    fb_count, last_fb_at = fb_result.one()
+    return _build_search_response(search, count, int(fb_count or 0), last_fb_at)
 
 
 @router.delete("/{search_id}", status_code=204)
@@ -149,36 +159,7 @@ async def submit_feedback(
         raise HTTPException(status_code=404, detail="Search not found")
 
     parsed = _parse_feedback_full(payload.text)
-
-    # Apply parsed changes to search
-    if "max_budget" in parsed:
-        search.max_budget = parsed["max_budget"]
-    if "radius_km" in parsed:
-        search.radius_km = parsed["radius_km"]
-    if "exclude_business" in parsed:
-        search.exclude_business = parsed["exclude_business"]
-    if "relevance_threshold" in parsed:
-        search.relevance_threshold = parsed["relevance_threshold"]
-    if "add_required_brands" in parsed:
-        brands = search.required_brands
-        for b in parsed["add_required_brands"]:
-            if b not in brands:
-                brands.append(b)
-        search.required_brands = brands
-    if "add_excluded_brands" in parsed:
-        brands = search.excluded_brands
-        for b in parsed["add_excluded_brands"]:
-            if b not in brands:
-                brands.append(b)
-        search.excluded_brands = brands
-    if "add_required_specs" in parsed:
-        specs = search.required_specs
-        for s in parsed["add_required_specs"]:
-            if s not in specs:
-                specs.append(s)
-        search.required_specs = specs
-    if "max_age_years" in parsed:
-        search.max_age_years = parsed["max_age_years"]
+    _apply_parsed_to_search(search, parsed)
 
     fb = Feedback(search_id=search_id, text=payload.text)
     fb.parsed_changes = parsed
@@ -193,6 +174,69 @@ async def submit_feedback(
         parsed_changes=fb.parsed_changes,
         created_at=fb.created_at,
     )
+
+
+@router.get("/{search_id}/feedback", response_model=list[FeedbackResponse])
+async def list_feedback(search_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(Feedback).where(Feedback.search_id == search_id).order_by(Feedback.created_at)
+    )
+    feedbacks = result.scalars().all()
+    return [
+        FeedbackResponse(
+            id=f.id, search_id=f.search_id, text=f.text,
+            parsed_changes=f.parsed_changes, created_at=f.created_at,
+        )
+        for f in feedbacks
+    ]
+
+
+@router.patch("/{search_id}/feedback/{fb_id}", response_model=FeedbackResponse)
+async def update_feedback(
+    search_id: int, fb_id: int, payload: FeedbackPatch, db: AsyncSession = Depends(get_db)
+):
+    if payload.text is None and payload.parsed_changes is None:
+        raise HTTPException(status_code=400, detail="Provide text or parsed_changes")
+
+    fb_result = await db.execute(
+        select(Feedback).where(Feedback.id == fb_id, Feedback.search_id == search_id)
+    )
+    fb = fb_result.scalar_one_or_none()
+    if not fb:
+        raise HTTPException(status_code=404, detail="Feedback not found")
+
+    search_result = await db.execute(select(Search).where(Search.id == search_id))
+    search = search_result.scalar_one_or_none()
+    if not search:
+        raise HTTPException(status_code=404, detail="Search not found")
+
+    if payload.text is not None:
+        fb.text = payload.text
+
+    new_parsed = payload.parsed_changes if payload.parsed_changes is not None else _parse_feedback_full(fb.text)
+    fb.parsed_changes = new_parsed
+    _apply_parsed_to_search(search, new_parsed)
+
+    await db.commit()
+    await db.refresh(fb)
+    return FeedbackResponse(
+        id=fb.id, search_id=fb.search_id, text=fb.text,
+        parsed_changes=fb.parsed_changes, created_at=fb.created_at,
+    )
+
+
+@router.delete("/{search_id}/feedback/{fb_id}", status_code=204)
+async def delete_feedback(
+    search_id: int, fb_id: int, db: AsyncSession = Depends(get_db)
+):
+    fb_result = await db.execute(
+        select(Feedback).where(Feedback.id == fb_id, Feedback.search_id == search_id)
+    )
+    fb = fb_result.scalar_one_or_none()
+    if not fb:
+        raise HTTPException(status_code=404, detail="Feedback not found")
+    await db.delete(fb)
+    await db.commit()
 
 
 @router.patch("/{search_id}/query", response_model=SearchResponse)
@@ -227,7 +271,9 @@ async def patch_search_query(
     return _build_search_response(search, count)
 
 
-def _build_search_response(s: Search, count: int) -> SearchResponse:
+def _build_search_response(
+    s: Search, count: int, feedback_count: int = 0, last_feedback_at=None
+) -> SearchResponse:
     return SearchResponse(
         id=s.id,
         query_text=s.query_text,
@@ -249,5 +295,38 @@ def _build_search_response(s: Search, count: int) -> SearchResponse:
         last_run_at=s.last_run_at,
         last_analyzed_at=s.last_analyzed_at,
         result_count=count,
+        feedback_count=feedback_count,
+        last_feedback_at=last_feedback_at,
     )
+
+
+def _apply_parsed_to_search(search: Search, parsed: dict) -> None:
+    if "max_budget" in parsed:
+        search.max_budget = parsed["max_budget"]
+    if "radius_km" in parsed:
+        search.radius_km = parsed["radius_km"]
+    if "exclude_business" in parsed:
+        search.exclude_business = parsed["exclude_business"]
+    if "relevance_threshold" in parsed:
+        search.relevance_threshold = parsed["relevance_threshold"]
+    if "max_age_years" in parsed:
+        search.max_age_years = parsed["max_age_years"]
+    if "add_required_brands" in parsed:
+        brands = search.required_brands
+        for b in parsed["add_required_brands"]:
+            if b not in brands:
+                brands.append(b)
+        search.required_brands = brands
+    if "add_excluded_brands" in parsed:
+        brands = search.excluded_brands
+        for b in parsed["add_excluded_brands"]:
+            if b not in brands:
+                brands.append(b)
+        search.excluded_brands = brands
+    if "add_required_specs" in parsed:
+        specs = search.required_specs
+        for s in parsed["add_required_specs"]:
+            if s not in specs:
+                specs.append(s)
+        search.required_specs = specs
 

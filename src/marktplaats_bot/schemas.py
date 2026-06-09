@@ -48,6 +48,8 @@ class SearchResponse(BaseModel):
     last_run_at: Optional[datetime]
     last_analyzed_at: Optional[datetime]
     result_count: int = 0
+    feedback_count: int = 0
+    last_feedback_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
 
@@ -101,6 +103,11 @@ class VerdictCreate(BaseModel):
 
 class FeedbackCreate(BaseModel):
     text: str = Field(..., min_length=1, max_length=2000)
+
+
+class FeedbackPatch(BaseModel):
+    text: Optional[str] = Field(default=None, min_length=1, max_length=2000)
+    parsed_changes: Optional[dict] = None
 
 
 class FeedbackResponse(BaseModel):
