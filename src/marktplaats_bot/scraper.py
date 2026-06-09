@@ -234,11 +234,13 @@ async def _extract_single_listing(el) -> Optional[ScrapedListing]:
         return None
 
     # --- Title ---
+    # inner_text() on card elements returns full card text; take first non-empty line only
     title = ""
     for title_sel in ["h3", "h2", "[class*='title']", "[class*='Title']"]:
         title_el = await el.query_selector(title_sel)
         if title_el:
-            title = (await title_el.inner_text()).strip()
+            raw = (await title_el.inner_text()).strip()
+            title = next((ln.strip() for ln in raw.splitlines() if ln.strip()), "")
             if title:
                 break
     if not title:
@@ -265,13 +267,23 @@ async def _extract_single_listing(el) -> Optional[ScrapedListing]:
                 break
 
     # --- Photos ---
-    imgs = await el.query_selector_all("img[src]:not([src=''])")
-    photo_count = max(0, len(imgs))
+    imgs = await el.query_selector_all("img")
+    photo_count = 0
     image_urls: list[str] = []
-    for img in imgs[:5]:
+    for img in imgs:
         src = await img.get_attribute("src") or await img.get_attribute("data-src") or ""
-        if src and src.startswith("http") and "marktplaats" in src:
+        src = src.strip()
+        if src and src.startswith("http") and not src.endswith(".svg"):
             image_urls.append(src)
+    # Deduplicate while preserving order
+    seen_srcs: set[str] = set()
+    unique_images: list[str] = []
+    for src in image_urls:
+        if src not in seen_srcs:
+            seen_srcs.add(src)
+            unique_images.append(src)
+    image_urls = unique_images[:5]
+    photo_count = len(image_urls)
 
     # --- Seller type (coarse; detailed analysis in task-009) ---
     seller_type = "unknown"
@@ -293,7 +305,11 @@ async def _extract_single_listing(el) -> Optional[ScrapedListing]:
     for desc_sel in ["[class*='description']", "[class*='Description']", "p"]:
         desc_el = await el.query_selector(desc_sel)
         if desc_el:
-            description = (await desc_el.inner_text()).strip()
+            desc_raw = (await desc_el.inner_text()).strip()
+            # Strip repeated title prefix (inner_text often includes title in description element)
+            if desc_raw.startswith(title):
+                desc_raw = desc_raw[len(title):].strip()
+            description = desc_raw
             if description:
                 break
 
