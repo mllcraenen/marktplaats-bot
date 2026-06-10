@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from .database import SessionLocal, init_db
-from .routers import searches
+from .routers import searches, listings
 from .schemas import HealthResponse
 from .scheduler import start_scheduler, stop_scheduler
 
@@ -40,6 +40,7 @@ app.add_middleware(
 )
 
 app.include_router(searches.router)
+app.include_router(listings.router)
 
 
 @app.get("/health", response_model=HealthResponse)

@@ -140,3 +140,50 @@ async def test_feedback_exclude_business(client):
 async def test_path_traversal_rejected(client):
     response = await client.get("/api/searches/../../etc/passwd")
     assert response.status_code in (400, 403, 404, 422)
+
+
+@pytest.mark.asyncio
+async def test_delete_correct_row(client):
+    """Deleting search A by ID must set A inactive and leave B active."""
+    resp_a = await client.post("/api/searches", json={"query_text": "racefiets"})
+    assert resp_a.status_code == 201
+    id_a = resp_a.json()["id"]
+
+    resp_b = await client.post("/api/searches", json={"query_text": "mountainbike"})
+    assert resp_b.status_code == 201
+    id_b = resp_b.json()["id"]
+
+    del_resp = await client.delete(f"/api/searches/{id_a}")
+    assert del_resp.status_code == 204
+
+    # A should return 404 (not found because it's inactive and the endpoint
+    # checks active status via the list endpoint; direct GET still finds it)
+    get_a = await client.get(f"/api/searches/{id_a}")
+    assert get_a.status_code == 200
+    assert get_a.json()["active"] is False
+
+    get_b = await client.get(f"/api/searches/{id_b}")
+    assert get_b.status_code == 200
+    assert get_b.json()["active"] is True
+
+
+@pytest.mark.asyncio
+async def test_delete_nonexistent_returns_404(client):
+    response = await client.delete("/api/searches/99999")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_list_excludes_inactive(client):
+    """After delete, GET /api/searches must not include the deleted search."""
+    resp = await client.post("/api/searches", json={"query_text": "vintage camera"})
+    assert resp.status_code == 201
+    search_id = resp.json()["id"]
+
+    del_resp = await client.delete(f"/api/searches/{search_id}")
+    assert del_resp.status_code == 204
+
+    list_resp = await client.get("/api/searches")
+    assert list_resp.status_code == 200
+    ids = [s["id"] for s in list_resp.json()]
+    assert search_id not in ids
