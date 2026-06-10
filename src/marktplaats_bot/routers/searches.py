@@ -1,3 +1,4 @@
+import re
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, func
@@ -300,6 +301,13 @@ def _build_search_response(
     )
 
 
+def _remove_keyword(keywords: str, kw: str) -> str:
+    """Remove all whole-word occurrences of kw from a keyword string."""
+    pattern = re.compile(r"\b" + re.escape(kw) + r"\b", re.IGNORECASE)
+    result = pattern.sub("", keywords)
+    return re.sub(r"\s{2,}", " ", result).strip()
+
+
 def _apply_parsed_to_search(search: Search, parsed: dict) -> None:
     if "max_budget" in parsed:
         search.max_budget = parsed["max_budget"]
@@ -329,4 +337,16 @@ def _apply_parsed_to_search(search: Search, parsed: dict) -> None:
             if s not in specs:
                 specs.append(s)
         search.required_specs = specs
+    if "remove_keywords" in parsed:
+        for kw in parsed["remove_keywords"]:
+            if search.nl_keywords:
+                search.nl_keywords = _remove_keyword(search.nl_keywords, kw)
+            if search.en_keywords:
+                search.en_keywords = _remove_keyword(search.en_keywords, kw)
+    if "add_keywords" in parsed:
+        for kw in parsed["add_keywords"]:
+            if search.nl_keywords and kw not in search.nl_keywords:
+                search.nl_keywords = f"{search.nl_keywords} {kw}".strip()
+            if search.en_keywords and kw not in search.en_keywords:
+                search.en_keywords = f"{search.en_keywords} {kw}".strip()
 

@@ -101,6 +101,19 @@ class VerdictCreate(BaseModel):
     ai_reason: Optional[str] = None
 
 
+class ParsedChanges(BaseModel):
+    max_budget: Optional[float] = None
+    radius_km: Optional[int] = None
+    max_age_years: Optional[int] = None
+    exclude_business: Optional[bool] = None
+    relevance_threshold: Optional[int] = None
+    add_required_brands: Optional[list[str]] = None
+    add_excluded_brands: Optional[list[str]] = None
+    add_required_specs: Optional[list[str]] = None
+    remove_keywords: Optional[list[str]] = None
+    add_keywords: Optional[list[str]] = None
+
+
 class FeedbackCreate(BaseModel):
     text: str = Field(..., min_length=1, max_length=2000)
 
