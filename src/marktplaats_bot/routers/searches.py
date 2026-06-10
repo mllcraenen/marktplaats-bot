@@ -138,6 +138,19 @@ async def mark_seen(search_id: int, result_id: int, db: AsyncSession = Depends(g
     return {"ok": True}
 
 
+@router.post("/{search_id}/results/{result_id}/favorite", status_code=200)
+async def toggle_favorite(search_id: int, result_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(Result).where(Result.id == result_id, Result.search_id == search_id)
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Result not found")
+    row.favorited = not row.favorited
+    await db.commit()
+    return {"ok": True, "favorited": row.favorited}
+
+
 @router.post("/{search_id}/results/mark-all-seen", status_code=200)
 async def mark_all_seen(search_id: int, db: AsyncSession = Depends(get_db)):
     results_q = await db.execute(
