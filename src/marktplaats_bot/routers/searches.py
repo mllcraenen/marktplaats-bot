@@ -4,10 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from datetime import datetime as _dt
 from ..database import AsyncSessionLocal, get_db
-from ..feedback import parse_feedback as _parse_feedback_full
 from ..models import Search, Result, Feedback
-from ..schemas import SearchCreate, SearchQueryPatch, SearchResponse, ResultResponse, FeedbackCreate, FeedbackPatch, FeedbackResponse
+from ..schemas import (
+    SearchCreate, SearchQueryPatch, SearchResponse, ResultResponse,
+    FeedbackCreate, FeedbackPatch, FeedbackResponse, SearchAiApply,
+)
 
 router = APIRouter(prefix="/api/searches", tags=["searches"])
 
@@ -181,11 +184,9 @@ async def submit_feedback(
     if not search:
         raise HTTPException(status_code=404, detail="Search not found")
 
-    parsed = _parse_feedback_full(payload.text)
-    _apply_parsed_to_search(search, parsed)
-
+    # Store as-is — AI will apply on the next analysis pass
     fb = Feedback(search_id=search_id, text=payload.text)
-    fb.parsed_changes = parsed
+    fb.parsed_changes = {}
     db.add(fb)
     await db.commit()
     await db.refresh(fb)
@@ -195,8 +196,68 @@ async def submit_feedback(
         search_id=fb.search_id,
         text=fb.text,
         parsed_changes=fb.parsed_changes,
+        applied=fb.applied,
+        applied_at=fb.applied_at,
         created_at=fb.created_at,
     )
+
+
+@router.post("/{search_id}/ai-apply", response_model=SearchResponse, status_code=200)
+async def ai_apply_feedback(
+    search_id: int, payload: SearchAiApply, db: AsyncSession = Depends(get_db)
+):
+    """
+    Apply an AI-generated config update to a search and mark all pending
+    feedback items as applied. Called by the OpenClaw AI worker after it has
+    processed the feedback list.
+    """
+    search_result = await db.execute(select(Search).where(Search.id == search_id))
+    search = search_result.scalar_one_or_none()
+    if not search:
+        raise HTTPException(status_code=404, detail="Search not found")
+
+    # Apply config changes
+    if payload.max_budget is not None:
+        search.max_budget = payload.max_budget
+    if payload.radius_km is not None:
+        search.radius_km = payload.radius_km
+    if payload.exclude_business is not None:
+        search.exclude_business = payload.exclude_business
+    if payload.relevance_threshold is not None:
+        search.relevance_threshold = payload.relevance_threshold
+    if payload.max_age_years is not None:
+        search.max_age_years = payload.max_age_years
+    if payload.nl_keywords is not None:
+        search.nl_keywords = payload.nl_keywords
+        search.query_enhanced = True
+    if payload.en_keywords is not None:
+        search.en_keywords = payload.en_keywords
+        search.query_enhanced = True
+    if payload.required_brands is not None:
+        search.required_brands = payload.required_brands
+    if payload.excluded_brands is not None:
+        search.excluded_brands = payload.excluded_brands
+    if payload.required_specs is not None:
+        search.required_specs = payload.required_specs
+
+    # Mark all pending feedback as applied
+    pending_r = await db.execute(
+        select(Feedback).where(Feedback.search_id == search_id, Feedback.applied == False)
+    )
+    now = _dt.utcnow()
+    for fb in pending_r.scalars().all():
+        fb.applied = True
+        fb.applied_at = now
+
+    await db.commit()
+    await db.refresh(search)
+    counts = await _fetch_counts(db, search_id)
+    fb_result = await db.execute(
+        select(func.count(Feedback.id), func.max(Feedback.created_at))
+        .where(Feedback.search_id == search_id)
+    )
+    fb_count, last_fb_at = fb_result.one()
+    return _build_search_response(search, **counts, feedback_count=int(fb_count or 0), last_feedback_at=last_fb_at)
 
 
 @router.get("/{search_id}/feedback", response_model=list[FeedbackResponse])
@@ -208,7 +269,8 @@ async def list_feedback(search_id: int, db: AsyncSession = Depends(get_db)):
     return [
         FeedbackResponse(
             id=f.id, search_id=f.search_id, text=f.text,
-            parsed_changes=f.parsed_changes, created_at=f.created_at,
+            parsed_changes=f.parsed_changes, applied=f.applied,
+            applied_at=f.applied_at, created_at=f.created_at,
         )
         for f in feedbacks
     ]
@@ -244,7 +306,8 @@ async def update_feedback(
     await db.refresh(fb)
     return FeedbackResponse(
         id=fb.id, search_id=fb.search_id, text=fb.text,
-        parsed_changes=fb.parsed_changes, created_at=fb.created_at,
+        parsed_changes=fb.parsed_changes, applied=fb.applied,
+        applied_at=fb.applied_at, created_at=fb.created_at,
     )
 
 
@@ -305,10 +368,16 @@ async def _fetch_counts(db: AsyncSession, search_id: int) -> dict:
             Result.ai_score < 4,
         )
     )
+    pending_fb_r = await db.execute(
+        select(func.count(Feedback.id)).where(
+            Feedback.search_id == search_id, Feedback.applied == False
+        )
+    )
     return {
         "result_count": total_r.scalar() or 0,
         "new_count": new_r.scalar() or 0,
         "irrelevant_count": irrel_r.scalar() or 0,
+        "pending_feedback_count": pending_fb_r.scalar() or 0,
     }
 
 
@@ -317,6 +386,7 @@ def _build_search_response(
     result_count: int = 0,
     new_count: int = 0,
     irrelevant_count: int = 0,
+    pending_feedback_count: int = 0,
     feedback_count: int = 0,
     last_feedback_at=None,
 ) -> SearchResponse:
@@ -343,6 +413,7 @@ def _build_search_response(
         result_count=result_count,
         new_count=new_count,
         irrelevant_count=irrelevant_count,
+        pending_feedback_count=pending_feedback_count,
         feedback_count=feedback_count,
         last_feedback_at=last_feedback_at,
     )

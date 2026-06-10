@@ -189,14 +189,14 @@ class TestApplyKeywordsToSearch:
             assert "parts" not in data["nl_keywords"].lower()
 
     @pytest.mark.asyncio
-    async def test_apply_add_keywords_appends(self, client):
+    async def test_ai_apply_updates_keywords(self, client):
+        # Feedback no longer immediately changes keywords; ai-apply does
         resp = await client.post(
             "/api/searches",
             json={"query_text": "Datsun 280z"},
         )
         search_id = resp.json()["id"]
 
-        # Patch keywords via the query endpoint so we have known starting state
         await client.patch(
             f"/api/searches/{search_id}/query",
             json={"nl_keywords": "Datsun 280z auto", "en_keywords": "Datsun 280z car"},
@@ -207,8 +207,14 @@ class TestApplyKeywordsToSearch:
             json={"text": "fixer-upper is fine"},
         )
 
+        # Keywords NOT yet changed — pending AI application
         get_resp = await client.get(f"/api/searches/{search_id}")
-        data = get_resp.json()
-        # "opknapper" or "fixer-upper" should have been appended to nl_keywords
-        assert "opknapper" in (data.get("nl_keywords") or "").lower() or \
-               "fixer" in (data.get("nl_keywords") or "").lower()
+        assert "opknapper" not in (get_resp.json().get("nl_keywords") or "").lower()
+
+        # AI worker applies the result
+        apply_resp = await client.post(
+            f"/api/searches/{search_id}/ai-apply",
+            json={"nl_keywords": "Datsun 280z auto opknapper", "summary": "Added opknapper per feedback"},
+        )
+        assert apply_resp.status_code == 200
+        assert "opknapper" in (apply_resp.json().get("nl_keywords") or "").lower()

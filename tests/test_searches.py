@@ -87,6 +87,7 @@ async def test_invalid_ranking_mode(client):
 
 @pytest.mark.asyncio
 async def test_submit_feedback(client):
+    # Feedback is now stored as-is; no immediate parsing or config changes
     create_resp = await client.post("/api/searches", json={"query_text": "sofa"})
     search_id = create_resp.json()["id"]
 
@@ -97,8 +98,8 @@ async def test_submit_feedback(client):
     assert fb_resp.status_code == 201
     data = fb_resp.json()
     assert data["search_id"] == search_id
-    assert "max_budget" in data["parsed_changes"]
-    assert data["parsed_changes"]["max_budget"] == 400.0
+    assert data["text"] == "budget max 400 euro"
+    assert data["applied"] is False
 
 
 @pytest.mark.asyncio
@@ -111,7 +112,8 @@ async def test_submit_feedback_not_found(client):
 
 
 @pytest.mark.asyncio
-async def test_feedback_updates_radius(client):
+async def test_feedback_does_not_immediately_update_search(client):
+    # Feedback is queued for AI; it does NOT immediately change search config
     create_resp = await client.post("/api/searches", json={"query_text": "piano"})
     search_id = create_resp.json()["id"]
 
@@ -120,11 +122,11 @@ async def test_feedback_updates_radius(client):
         json={"text": "within 15 km please"},
     )
     get_resp = await client.get(f"/api/searches/{search_id}")
-    assert get_resp.json()["radius_km"] == 15
+    assert get_resp.json()["radius_km"] == 25  # unchanged until AI applies
 
 
 @pytest.mark.asyncio
-async def test_feedback_exclude_business(client):
+async def test_ai_apply_updates_search_and_marks_feedback_applied(client):
     create_resp = await client.post("/api/searches", json={"query_text": "wasmachine"})
     search_id = create_resp.json()["id"]
 
@@ -132,8 +134,25 @@ async def test_feedback_exclude_business(client):
         f"/api/searches/{search_id}/feedback",
         json={"text": "too many business listings"},
     )
+    # pending_feedback_count should be 1 now
     get_resp = await client.get(f"/api/searches/{search_id}")
-    assert get_resp.json()["exclude_business"] is True
+    assert get_resp.json()["pending_feedback_count"] == 1
+
+    # AI worker calls ai-apply with the resolved config
+    apply_resp = await client.post(
+        f"/api/searches/{search_id}/ai-apply",
+        json={"exclude_business": True, "summary": "Excluded business sellers per feedback"},
+    )
+    assert apply_resp.status_code == 200
+    assert apply_resp.json()["exclude_business"] is True
+
+    # Feedback is now applied, pending count back to 0
+    get_resp2 = await client.get(f"/api/searches/{search_id}")
+    assert get_resp2.json()["pending_feedback_count"] == 0
+
+    # Verify feedback item is marked applied
+    fb_list = await client.get(f"/api/searches/{search_id}/feedback")
+    assert all(fb["applied"] for fb in fb_list.json())
 
 
 @pytest.mark.asyncio
