@@ -48,6 +48,8 @@ class SearchResponse(BaseModel):
     last_run_at: Optional[datetime]
     last_analyzed_at: Optional[datetime]
     result_count: int = 0
+    new_count: int = 0
+    irrelevant_count: int = 0
     feedback_count: int = 0
     last_feedback_at: Optional[datetime] = None
 

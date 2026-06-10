@@ -26,14 +26,13 @@ async def list_searches(db: AsyncSession = Depends(get_db)):
     searches = result.scalars().all()
     out = []
     for s in searches:
-        count_result = await db.execute(select(func.count(Result.id)).where(Result.search_id == s.id))
-        count = count_result.scalar() or 0
+        counts = await _fetch_counts(db, s.id)
         fb_result = await db.execute(
             select(func.count(Feedback.id), func.max(Feedback.created_at))
             .where(Feedback.search_id == s.id)
         )
         fb_count, last_fb_at = fb_result.one()
-        out.append(_build_search_response(s, count, int(fb_count or 0), last_fb_at))
+        out.append(_build_search_response(s, **counts, feedback_count=int(fb_count or 0), last_feedback_at=last_fb_at))
     return out
 
 
@@ -62,7 +61,7 @@ async def create_search(payload: SearchCreate, db: AsyncSession = Depends(get_db
         await trigger_immediate_run(search.id, AsyncSessionLocal)
     except Exception:
         pass  # Non-fatal — scheduled runs will pick it up
-    return _build_search_response(search, 0)
+    return _build_search_response(search)
 
 
 @router.get("/unenhanced", response_model=list[SearchResponse])
@@ -74,9 +73,8 @@ async def get_unenhanced(db: AsyncSession = Depends(get_db)):
     searches = result.scalars().all()
     out = []
     for s in searches:
-        count_result = await db.execute(select(func.count(Result.id)).where(Result.search_id == s.id))
-        count = count_result.scalar() or 0
-        out.append(_build_search_response(s, count))
+        counts = await _fetch_counts(db, s.id)
+        out.append(_build_search_response(s, **counts))
     return out
 
 
@@ -86,14 +84,13 @@ async def get_search(search_id: int, db: AsyncSession = Depends(get_db)):
     search = result.scalar_one_or_none()
     if not search:
         raise HTTPException(status_code=404, detail="Search not found")
-    count_result = await db.execute(select(func.count(Result.id)).where(Result.search_id == search_id))
-    count = count_result.scalar() or 0
+    counts = await _fetch_counts(db, search_id)
     fb_result = await db.execute(
         select(func.count(Feedback.id), func.max(Feedback.created_at))
         .where(Feedback.search_id == search_id)
     )
     fb_count, last_fb_at = fb_result.one()
-    return _build_search_response(search, count, int(fb_count or 0), last_fb_at)
+    return _build_search_response(search, **counts, feedback_count=int(fb_count or 0), last_feedback_at=last_fb_at)
 
 
 @router.delete("/{search_id}", status_code=204)
@@ -139,6 +136,18 @@ async def mark_seen(search_id: int, result_id: int, db: AsyncSession = Depends(g
     row.seen = True
     await db.commit()
     return {"ok": True}
+
+
+@router.post("/{search_id}/results/mark-all-seen", status_code=200)
+async def mark_all_seen(search_id: int, db: AsyncSession = Depends(get_db)):
+    results_q = await db.execute(
+        select(Result).where(Result.search_id == search_id, Result.seen == False)
+    )
+    rows = results_q.scalars().all()
+    for row in rows:
+        row.seen = True
+    await db.commit()
+    return {"ok": True, "count": len(rows)}
 
 
 @router.post("/run-now", status_code=202)
@@ -267,13 +276,36 @@ async def patch_search_query(
     await db.commit()
     await db.refresh(search)
 
-    count_result = await db.execute(select(func.count(Result.id)).where(Result.search_id == search_id))
-    count = count_result.scalar() or 0
-    return _build_search_response(search, count)
+    counts = await _fetch_counts(db, search_id)
+    return _build_search_response(search, **counts)
+
+
+async def _fetch_counts(db: AsyncSession, search_id: int) -> dict:
+    total_r = await db.execute(select(func.count(Result.id)).where(Result.search_id == search_id))
+    new_r = await db.execute(
+        select(func.count(Result.id)).where(Result.search_id == search_id, Result.seen == False)
+    )
+    irrel_r = await db.execute(
+        select(func.count(Result.id)).where(
+            Result.search_id == search_id,
+            Result.ai_score.is_not(None),
+            Result.ai_score < 4,
+        )
+    )
+    return {
+        "result_count": total_r.scalar() or 0,
+        "new_count": new_r.scalar() or 0,
+        "irrelevant_count": irrel_r.scalar() or 0,
+    }
 
 
 def _build_search_response(
-    s: Search, count: int, feedback_count: int = 0, last_feedback_at=None
+    s: Search,
+    result_count: int = 0,
+    new_count: int = 0,
+    irrelevant_count: int = 0,
+    feedback_count: int = 0,
+    last_feedback_at=None,
 ) -> SearchResponse:
     return SearchResponse(
         id=s.id,
@@ -295,7 +327,9 @@ def _build_search_response(
         created_at=s.created_at,
         last_run_at=s.last_run_at,
         last_analyzed_at=s.last_analyzed_at,
-        result_count=count,
+        result_count=result_count,
+        new_count=new_count,
+        irrelevant_count=irrelevant_count,
         feedback_count=feedback_count,
         last_feedback_at=last_feedback_at,
     )
