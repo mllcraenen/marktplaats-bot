@@ -1,6 +1,6 @@
 import re
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -167,10 +167,15 @@ async def mark_all_seen(search_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/run-now", status_code=202)
-async def trigger_run_all():
+async def trigger_run_all(wait: bool = Query(default=False)):
     """Trigger an immediate scrape run for all active searches."""
     import asyncio
     from ..scheduler import run_all_searches
+
+    if wait:
+        await run_all_searches(AsyncSessionLocal)
+        return {"status": "completed"}
+
     asyncio.create_task(run_all_searches(AsyncSessionLocal))
     return {"status": "triggered"}
 
@@ -280,8 +285,8 @@ async def list_feedback(search_id: int, db: AsyncSession = Depends(get_db)):
 async def update_feedback(
     search_id: int, fb_id: int, payload: FeedbackPatch, db: AsyncSession = Depends(get_db)
 ):
-    if payload.text is None and payload.parsed_changes is None:
-        raise HTTPException(status_code=400, detail="Provide text or parsed_changes")
+    if payload.text is None:
+        raise HTTPException(status_code=400, detail="Provide text")
 
     fb_result = await db.execute(
         select(Feedback).where(Feedback.id == fb_id, Feedback.search_id == search_id)
@@ -297,10 +302,9 @@ async def update_feedback(
 
     if payload.text is not None:
         fb.text = payload.text
-
-    new_parsed = payload.parsed_changes if payload.parsed_changes is not None else _parse_feedback_full(fb.text)
-    fb.parsed_changes = new_parsed
-    _apply_parsed_to_search(search, new_parsed)
+        fb.parsed_changes = {}
+        fb.applied = False
+        fb.applied_at = None
 
     await db.commit()
     await db.refresh(fb)
@@ -359,7 +363,11 @@ async def patch_search_query(
 async def _fetch_counts(db: AsyncSession, search_id: int) -> dict:
     total_r = await db.execute(select(func.count(Result.id)).where(Result.search_id == search_id))
     new_r = await db.execute(
-        select(func.count(Result.id)).where(Result.search_id == search_id, Result.seen == False)
+        select(func.count(Result.id)).where(
+            Result.search_id == search_id,
+            Result.seen == False,
+            (Result.ai_score.is_(None)) | (Result.ai_score >= 4),
+        )
     )
     irrel_r = await db.execute(
         select(func.count(Result.id)).where(
@@ -467,4 +475,3 @@ def _apply_parsed_to_search(search: Search, parsed: dict) -> None:
                 search.nl_keywords = f"{search.nl_keywords} {kw}".strip()
             if search.en_keywords and kw not in search.en_keywords:
                 search.en_keywords = f"{search.en_keywords} {kw}".strip()
-

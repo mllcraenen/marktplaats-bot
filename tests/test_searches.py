@@ -1,4 +1,8 @@
 import pytest
+from unittest.mock import AsyncMock, patch
+
+from marktplaats_bot.models import Result, Search
+from marktplaats_bot.routers.searches import _fetch_counts
 
 
 @pytest.mark.asyncio
@@ -153,6 +157,36 @@ async def test_ai_apply_updates_search_and_marks_feedback_applied(client):
     # Verify feedback item is marked applied
     fb_list = await client.get(f"/api/searches/{search_id}/feedback")
     assert all(fb["applied"] for fb in fb_list.json())
+
+
+@pytest.mark.asyncio
+async def test_run_now_waits_for_completion(client):
+    with patch("marktplaats_bot.scheduler.run_all_searches", new=AsyncMock()) as run_all:
+        response = await client.post("/api/searches/run-now?wait=true")
+
+    assert response.status_code == 202
+    assert response.json() == {"status": "completed"}
+    run_all.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_new_count_excludes_ai_irrelevant_results(db_session):
+    search = Search(query_text="keyboard")
+    db_session.add(search)
+    await db_session.flush()
+
+    db_session.add_all([
+        Result(search_id=search.id, listing_id="good", title="Good keyboard", url="https://example.com/good", seen=False, ai_score=8),
+        Result(search_id=search.id, listing_id="poor", title="Poor keyboard", url="https://example.com/poor", seen=False, ai_score=2),
+        Result(search_id=search.id, listing_id="seen", title="Seen keyboard", url="https://example.com/seen", seen=True, ai_score=9),
+    ])
+    await db_session.commit()
+
+    counts = await _fetch_counts(db_session, search.id)
+
+    assert counts["result_count"] == 3
+    assert counts["new_count"] == 1
+    assert counts["irrelevant_count"] == 1
 
 
 @pytest.mark.asyncio
