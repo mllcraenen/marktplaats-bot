@@ -151,7 +151,14 @@ async def _do_scrape(url: str, max_results: int) -> list[ScrapedListing]:
     from playwright.async_api import async_playwright
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=[
+                "--no-zygote",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+            ],
+        )
         context = await browser.new_context(
             user_agent=USER_AGENT,
             viewport={"width": 1280, "height": 800},
