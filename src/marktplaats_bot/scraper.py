@@ -42,6 +42,8 @@ class ScrapedListing:
     description: str = ""
     seller_type: str = "unknown"
     seller_name: str = ""
+    is_bidding: bool = False
+    image_urls: list = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +63,13 @@ def _build_search_url(
     if max_price is not None:
         url += f"|priceTo:{int(max_price)}"
     return url
+
+
+def _is_bidding_price(text: str) -> bool:
+    if not text:
+        return False
+    lower = text.lower().strip()
+    return "bieden" in lower or "bod" in lower
 
 
 def _parse_price(text: str) -> Optional[float]:
@@ -142,7 +151,14 @@ async def _do_scrape(url: str, max_results: int) -> list[ScrapedListing]:
     from playwright.async_api import async_playwright
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=[
+                "--no-zygote",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+            ],
+        )
         context = await browser.new_context(
             user_agent=USER_AGENT,
             viewport={"width": 1280, "height": 800},
@@ -225,11 +241,13 @@ async def _extract_single_listing(el) -> Optional[ScrapedListing]:
         return None
 
     # --- Title ---
+    # inner_text() on card elements returns full card text; take first non-empty line only
     title = ""
     for title_sel in ["h3", "h2", "[class*='title']", "[class*='Title']"]:
         title_el = await el.query_selector(title_sel)
         if title_el:
-            title = (await title_el.inner_text()).strip()
+            raw = (await title_el.inner_text()).strip()
+            title = next((ln.strip() for ln in raw.splitlines() if ln.strip()), "")
             if title:
                 break
     if not title:
@@ -237,10 +255,13 @@ async def _extract_single_listing(el) -> Optional[ScrapedListing]:
 
     # --- Price ---
     price: Optional[float] = None
+    is_bidding = False
     for price_sel in ["[class*='price']", "[class*='Price']", "[data-testid*='price']"]:
         price_el = await el.query_selector(price_sel)
         if price_el:
-            price = _parse_price(await price_el.inner_text())
+            raw_price_text = await price_el.inner_text()
+            is_bidding = _is_bidding_price(raw_price_text)
+            price = _parse_price(raw_price_text)
             break
 
     # --- Distance ---
@@ -253,8 +274,23 @@ async def _extract_single_listing(el) -> Optional[ScrapedListing]:
                 break
 
     # --- Photos ---
-    imgs = await el.query_selector_all("img[src]:not([src=''])")
-    photo_count = max(0, len(imgs))
+    imgs = await el.query_selector_all("img")
+    photo_count = 0
+    image_urls: list[str] = []
+    for img in imgs:
+        src = await img.get_attribute("src") or await img.get_attribute("data-src") or ""
+        src = src.strip()
+        if src and src.startswith("http") and not src.endswith(".svg"):
+            image_urls.append(src)
+    # Deduplicate while preserving order
+    seen_srcs: set[str] = set()
+    unique_images: list[str] = []
+    for src in image_urls:
+        if src not in seen_srcs:
+            seen_srcs.add(src)
+            unique_images.append(src)
+    image_urls = unique_images[:5]
+    photo_count = len(image_urls)
 
     # --- Seller type (coarse; detailed analysis in task-009) ---
     seller_type = "unknown"
@@ -276,7 +312,11 @@ async def _extract_single_listing(el) -> Optional[ScrapedListing]:
     for desc_sel in ["[class*='description']", "[class*='Description']", "p"]:
         desc_el = await el.query_selector(desc_sel)
         if desc_el:
-            description = (await desc_el.inner_text()).strip()
+            desc_raw = (await desc_el.inner_text()).strip()
+            # Strip repeated title prefix (inner_text often includes title in description element)
+            if desc_raw.startswith(title):
+                desc_raw = desc_raw[len(title):].strip()
+            description = desc_raw
             if description:
                 break
 
@@ -291,6 +331,8 @@ async def _extract_single_listing(el) -> Optional[ScrapedListing]:
         description=description,
         seller_type=seller_type,
         seller_name=seller_name,
+        is_bidding=is_bidding,
+        image_urls=image_urls,
     )
 
 
@@ -324,14 +366,16 @@ async def scrape_bilingual(
     postcode: str = "3027CM",
     radius_km: int = 25,
     max_price: Optional[float] = None,
+    en_query_override: Optional[str] = None,
 ) -> tuple[list[ScrapedListing], str, str]:
     """
     Translate *query* to both NL and EN, scrape both, deduplicate by listing_id.
 
-    Returns ``(unique_listings, nl_query, en_query)``.
+    When en_query_override is provided (AI-enhanced), use it directly instead of
+    auto-translating. Returns ``(unique_listings, nl_query, en_query)``.
     """
     nl_query = translate_query(query, "nl")
-    en_query = translate_query(query, "en")
+    en_query = en_query_override if en_query_override else translate_query(query, "en")
 
     logger.info("Bilingual scrape — NL: '%s'  EN: '%s'", nl_query, en_query)
 

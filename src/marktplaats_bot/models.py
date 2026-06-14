@@ -26,8 +26,10 @@ class Search(Base):
     relevance_threshold: Mapped[int] = mapped_column(Integer, default=60)
     ranking_mode: Mapped[str] = mapped_column(String(50), default="precise_fit")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    query_enhanced: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     last_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_analyzed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     results: Mapped[list["Result"]] = relationship("Result", back_populates="search", cascade="all, delete-orphan")
     feedbacks: Mapped[list["Feedback"]] = relationship("Feedback", back_populates="search", cascade="all, delete-orphan")
@@ -74,8 +76,14 @@ class Result(Base):
     relevance_score: Mapped[int] = mapped_column(Integer, default=0)
     deal_score: Mapped[int] = mapped_column(Integer, default=0)
     quality_score: Mapped[int] = mapped_column(Integer, default=0)
+    ai_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    ai_flags: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON array
+    ai_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    image_urls: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON array
+    is_bidding: Mapped[bool] = mapped_column(Boolean, default=False)
     notified: Mapped[bool] = mapped_column(Boolean, default=False)
     seen: Mapped[bool] = mapped_column(Boolean, default=False)
+    favorited: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     search: Mapped["Search"] = relationship("Search", back_populates="results")
@@ -88,6 +96,8 @@ class Feedback(Base):
     search_id: Mapped[int] = mapped_column(Integer, ForeignKey("searches.id"), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     _parsed_changes: Mapped[Optional[str]] = mapped_column("parsed_changes", Text, nullable=True, default="{}")
+    applied: Mapped[bool] = mapped_column(Boolean, default=False)
+    applied_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     search: Mapped["Search"] = relationship("Search", back_populates="feedbacks")

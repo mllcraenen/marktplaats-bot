@@ -68,22 +68,28 @@ async def run_single_search(search_id: int, db_factory) -> None:
         max_budget = search.max_budget
         radius_km = search.radius_km
         postcode = search.postcode
+        query_enhanced = search.query_enhanced
+        # Use AI-enhanced keywords as the actual search term if available
+        nl_search_term = search.nl_keywords if search.nl_keywords else query_text
+        en_search_term = search.en_keywords if search.en_keywords else None
         query_keywords = (
             ((search.nl_keywords or "") + " " + (search.en_keywords or "")).split()
+            or query_text.split()
         )
         required_specs = search.required_specs
         required_brands = search.required_brands
         excluded_brands = search.excluded_brands
         exclude_business = search.exclude_business
 
-    logger.info("Running scrape for search %d: '%s'", search_id, query_text)
+    logger.info("Running scrape for search %d: '%s' (enhanced=%s)", search_id, nl_search_term, query_enhanced)
 
     try:
         listings, nl_query, en_query = await scrape_bilingual(
-            query_text,
+            nl_search_term,
             postcode=postcode,
             radius_km=radius_km,
             max_price=max_budget,
+            en_query_override=en_search_term,
         )
     except Exception as exc:
         logger.error("Scrape failed for search %d: %s", search_id, exc)
@@ -105,6 +111,7 @@ async def run_single_search(search_id: int, db_factory) -> None:
             price_history=price_history,
         )
 
+        import json as _json
         row = Result(
             search_id=search_id,
             listing_id=listing.listing_id,
@@ -119,19 +126,38 @@ async def run_single_search(search_id: int, db_factory) -> None:
             relevance_score=result_obj.relevance_score,
             deal_score=result_obj.deal_score,
             quality_score=result_obj.quality_score,
+            is_bidding=listing.is_bidding,
+            image_urls=_json.dumps(listing.image_urls) if listing.image_urls else None,
         )
         new_results.append(row)
 
     if new_results:
         async with db_factory() as db:
-            # Update nl/en keywords
+            from sqlalchemy.exc import IntegrityError
+
             r = await db.execute(select(Search).where(Search.id == search_id))
             s = r.scalar_one_or_none()
             if s:
-                s.nl_keywords = nl_query
-                s.en_keywords = en_query
+                # Only store scraper-derived keywords if AI hasn't enhanced them yet
+                if not query_enhanced:
+                    s.nl_keywords = nl_query
+                    s.en_keywords = en_query
                 s.last_run_at = datetime.utcnow()
-                db.add_all(new_results)
+                for row in new_results:
+                    db.add(row)
+                    try:
+                        await db.flush()
+                    except IntegrityError:
+                        await db.rollback()
+                        logger.debug(
+                            "Search %d: duplicate listing_id %s, skipping",
+                            search_id, row.listing_id,
+                        )
+                        # Re-attach search update after rollback
+                        r2 = await db.execute(select(Search).where(Search.id == search_id))
+                        s = r2.scalar_one_or_none()
+                        if s:
+                            s.last_run_at = datetime.utcnow()
                 await db.commit()
 
         logger.info(
