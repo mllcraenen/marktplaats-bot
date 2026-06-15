@@ -78,6 +78,45 @@ async def test_post_verdict_invalid_score(client: AsyncClient, db_session):
 
 
 @pytest.mark.asyncio
+async def test_unanalyzed_includes_search_metadata(client: AsyncClient, db_session):
+    s = Search(
+        query_text="Datsun 280z",
+        postcode="3027CM",
+        max_budget=5000.0,
+        radius_km=50,
+        exclude_business=True,
+    )
+    s.required_specs = ["hardtop"]
+    s.required_brands = ["Datsun"]
+    s.excluded_brands = ["replica"]
+    db_session.add(s)
+    await db_session.commit()
+    await db_session.refresh(s)
+
+    r = Result(
+        search_id=s.id,
+        listing_id="z123",
+        title="Datsun 280z project",
+        url="https://marktplaats.nl/v/test/z123",
+    )
+    db_session.add(r)
+    await db_session.commit()
+
+    resp = await client.get("/api/listings/unanalyzed")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    meta = data[0]["search"]
+    assert meta["query_text"] == "Datsun 280z"
+    assert meta["max_budget"] == 5000.0
+    assert meta["radius_km"] == 50
+    assert meta["exclude_business"] is True
+    assert "hardtop" in meta["required_specs"]
+    assert "Datsun" in meta["required_brands"]
+    assert "replica" in meta["excluded_brands"]
+
+
+@pytest.mark.asyncio
 async def test_unanalyzed_limit(client: AsyncClient, db_session):
     s = await _make_search(db_session)
     for i in range(5):
