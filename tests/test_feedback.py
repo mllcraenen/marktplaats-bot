@@ -121,6 +121,50 @@ class TestFeedbackKeywordDirection:
         assert r.get("add_excluded_brands") is not None or r.get("remove_keywords") == []
 
 
+class TestNegationHandling:
+    """Regression tests for negation-aware parsing."""
+
+    def test_dont_want_rgb_not_required_brand(self):
+        r = parse_feedback("I don't want RGB at all")
+        assert "rgb" not in [b.lower() for b in r.get("add_required_brands", [])]
+        assert "rgb" not in [s.lower() for s in r.get("add_required_specs", [])]
+
+    def test_dont_want_routes_to_remove(self):
+        r = parse_feedback("I don't want RGB at all")
+        assert "rgb" in r.get("remove_keywords", [])
+
+    def test_negated_want_not_required_brand(self):
+        r = parse_feedback("don't want motors")
+        assert r.get("add_required_brands", []) == []
+
+    def test_with_rgb_in_negative_clause_not_required_spec(self):
+        r = parse_feedback("I don't want gaming keyboards with RGB")
+        assert "rgb" not in [s.lower() for s in r.get("add_required_specs", [])]
+
+    def test_positive_want_still_works(self):
+        r = parse_feedback("I want only Trek bikes")
+        required = [b.lower() for b in r.get("add_required_brands", [])]
+        assert any("trek" in b for b in required)
+
+    def test_only_brand_without_negation(self):
+        r = parse_feedback("only Specialized")
+        required = [b.lower() for b in r.get("add_required_brands", [])]
+        assert any("specialized" in b for b in required)
+
+    def test_geen_rgb_to_remove_keywords(self):
+        r = parse_feedback("geen RGB")
+        assert "rgb" in r.get("remove_keywords", []) or \
+               "rgb" not in [b.lower() for b in r.get("add_required_brands", [])]
+
+    def test_dont_want_does_not_produce_required_spec(self):
+        r = parse_feedback("I don't want any electric motors")
+        assert r.get("add_required_specs", []) == []
+
+    def test_must_have_still_works_positive(self):
+        r = parse_feedback("must have hydraulic brakes")
+        assert len(r.get("add_required_specs", [])) > 0
+
+
 class TestApplyKeywordsToSearch:
     """Integration tests for _apply_parsed_to_search keyword mutation (task-mp-002)."""
 
@@ -145,14 +189,14 @@ class TestApplyKeywordsToSearch:
             assert "parts" not in data["nl_keywords"].lower()
 
     @pytest.mark.asyncio
-    async def test_apply_add_keywords_appends(self, client):
+    async def test_ai_apply_updates_keywords(self, client):
+        # Feedback no longer immediately changes keywords; ai-apply does
         resp = await client.post(
             "/api/searches",
             json={"query_text": "Datsun 280z"},
         )
         search_id = resp.json()["id"]
 
-        # Patch keywords via the query endpoint so we have known starting state
         await client.patch(
             f"/api/searches/{search_id}/query",
             json={"nl_keywords": "Datsun 280z auto", "en_keywords": "Datsun 280z car"},
@@ -163,8 +207,14 @@ class TestApplyKeywordsToSearch:
             json={"text": "fixer-upper is fine"},
         )
 
+        # Keywords NOT yet changed — pending AI application
         get_resp = await client.get(f"/api/searches/{search_id}")
-        data = get_resp.json()
-        # "opknapper" or "fixer-upper" should have been appended to nl_keywords
-        assert "opknapper" in (data.get("nl_keywords") or "").lower() or \
-               "fixer" in (data.get("nl_keywords") or "").lower()
+        assert "opknapper" not in (get_resp.json().get("nl_keywords") or "").lower()
+
+        # AI worker applies the result
+        apply_resp = await client.post(
+            f"/api/searches/{search_id}/ai-apply",
+            json={"nl_keywords": "Datsun 280z auto opknapper", "summary": "Added opknapper per feedback"},
+        )
+        assert apply_resp.status_code == 200
+        assert "opknapper" in (apply_resp.json().get("nl_keywords") or "").lower()

@@ -83,6 +83,7 @@ class Result(Base):
     is_bidding: Mapped[bool] = mapped_column(Boolean, default=False)
     notified: Mapped[bool] = mapped_column(Boolean, default=False)
     seen: Mapped[bool] = mapped_column(Boolean, default=False)
+    favorited: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     search: Mapped["Search"] = relationship("Search", back_populates="results")
@@ -95,6 +96,8 @@ class Feedback(Base):
     search_id: Mapped[int] = mapped_column(Integer, ForeignKey("searches.id"), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     _parsed_changes: Mapped[Optional[str]] = mapped_column("parsed_changes", Text, nullable=True, default="{}")
+    applied: Mapped[bool] = mapped_column(Boolean, default=False)
+    applied_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     search: Mapped["Search"] = relationship("Search", back_populates="feedbacks")

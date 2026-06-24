@@ -48,7 +48,10 @@ class SearchResponse(BaseModel):
     last_run_at: Optional[datetime]
     last_analyzed_at: Optional[datetime]
     result_count: int = 0
+    new_count: int = 0
+    irrelevant_count: int = 0
     feedback_count: int = 0
+    pending_feedback_count: int = 0
     last_feedback_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
@@ -76,6 +79,7 @@ class ResultResponse(BaseModel):
     is_bidding: bool
     notified: bool
     seen: bool
+    favorited: bool
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -128,9 +132,26 @@ class FeedbackResponse(BaseModel):
     search_id: int
     text: str
     parsed_changes: dict
+    applied: bool
+    applied_at: Optional[datetime]
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class SearchAiApply(BaseModel):
+    """Structured config update produced by the AI feedback applier."""
+    max_budget: Optional[float] = None
+    radius_km: Optional[int] = None
+    exclude_business: Optional[bool] = None
+    relevance_threshold: Optional[int] = Field(default=None, ge=0, le=100)
+    max_age_years: Optional[int] = Field(default=None, ge=0, le=50)
+    nl_keywords: Optional[str] = None
+    en_keywords: Optional[str] = None
+    required_brands: Optional[list[str]] = None
+    excluded_brands: Optional[list[str]] = None
+    required_specs: Optional[list[str]] = None
+    summary: Optional[str] = None
 
 
 class HealthResponse(BaseModel):
