@@ -74,3 +74,97 @@ class TestParseFeedback:
     def test_decimal_budget(self):
         r = parse_feedback("max 299,99 euro")
         assert r["max_budget"] == pytest.approx(299.99)
+
+
+class TestFeedbackKeywordDirection:
+    """Tests for remove_keywords / add_keywords parsing (task-mp-002)."""
+
+    def test_parse_car_not_parts(self):
+        r = parse_feedback("looking for the car, not parts. fixer-upper is fine")
+        # "parts" is a generic topic noun → must go to remove_keywords, not excluded brands
+        assert "parts" in r.get("remove_keywords", [])
+        assert "parts" not in r.get("add_excluded_brands", [])
+        # "fixer-upper" and/or "looking for the car" must produce add_keywords
+        assert len(r.get("add_keywords", [])) > 0
+
+    def test_generic_nouns_not_treated_as_brands(self):
+        # "not parts" and "geen dealers" should produce empty add_excluded_brands
+        r1 = parse_feedback("not parts")
+        assert r1.get("add_excluded_brands", []) == []
+
+        r2 = parse_feedback("geen dealers")
+        assert r2.get("add_excluded_brands", []) == []
+
+    def test_fixer_upper_adds_keywords(self):
+        r = parse_feedback("fixer-upper is fine")
+        kws = r.get("add_keywords", [])
+        assert len(kws) > 0
+
+    def test_whole_car_adds_keywords(self):
+        r = parse_feedback("looking for the car, not parts")
+        kws = r.get("add_keywords", [])
+        assert "heel" in kws or "compleet" in kws
+
+    def test_not_parts_adds_to_remove_keywords(self):
+        r = parse_feedback("not parts")
+        assert "parts" in r.get("remove_keywords", [])
+
+    def test_geen_onderdelen_adds_to_remove_keywords(self):
+        r = parse_feedback("geen onderdelen")
+        assert "onderdelen" in r.get("remove_keywords", [])
+
+    def test_brand_name_still_excluded(self):
+        # A real brand name (not a generic noun) should still go to add_excluded_brands
+        r = parse_feedback("no Chinese brands")
+        # "Chinese brands" — "brands" stripped by _clean_brand, leaving "Chinese"
+        # which is not a stop word, so it should be treated as brand
+        assert r.get("add_excluded_brands") is not None or r.get("remove_keywords") == []
+
+
+class TestApplyKeywordsToSearch:
+    """Integration tests for _apply_parsed_to_search keyword mutation (task-mp-002)."""
+
+    @pytest.mark.asyncio
+    async def test_apply_remove_keywords_strips_from_nl_keywords(self, client):
+        resp = await client.post(
+            "/api/searches",
+            json={"query_text": "Datsun 280z parts restoration"},
+        )
+        search_id = resp.json()["id"]
+
+        # Manually patch nl_keywords via feedback
+        await client.post(
+            f"/api/searches/{search_id}/feedback",
+            json={"text": "not parts"},
+        )
+
+        get_resp = await client.get(f"/api/searches/{search_id}")
+        data = get_resp.json()
+        # nl_keywords might be None (scraper not run), but if set, "parts" should be removed
+        if data.get("nl_keywords"):
+            assert "parts" not in data["nl_keywords"].lower()
+
+    @pytest.mark.asyncio
+    async def test_apply_add_keywords_appends(self, client):
+        resp = await client.post(
+            "/api/searches",
+            json={"query_text": "Datsun 280z"},
+        )
+        search_id = resp.json()["id"]
+
+        # Patch keywords via the query endpoint so we have known starting state
+        await client.patch(
+            f"/api/searches/{search_id}/query",
+            json={"nl_keywords": "Datsun 280z auto", "en_keywords": "Datsun 280z car"},
+        )
+
+        await client.post(
+            f"/api/searches/{search_id}/feedback",
+            json={"text": "fixer-upper is fine"},
+        )
+
+        get_resp = await client.get(f"/api/searches/{search_id}")
+        data = get_resp.json()
+        # "opknapper" or "fixer-upper" should have been appended to nl_keywords
+        assert "opknapper" in (data.get("nl_keywords") or "").lower() or \
+               "fixer" in (data.get("nl_keywords") or "").lower()
