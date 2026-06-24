@@ -3,6 +3,7 @@ services:
     build: .
     container_name: marktplaats-bot
     restart: unless-stopped
+    init: true
     ports:
       - "127.0.0.1:3002:3002"
     env_file:
