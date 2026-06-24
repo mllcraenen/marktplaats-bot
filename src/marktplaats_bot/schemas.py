@@ -1,6 +1,7 @@
+import json
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class SearchCreate(BaseModel):
@@ -15,6 +16,15 @@ class SearchCreate(BaseModel):
     exclude_business: bool = False
     relevance_threshold: int = Field(default=60, ge=0, le=100)
     ranking_mode: str = Field(default="precise_fit", pattern="^(precise_fit|mispricing|time_in_market|popularity|distance)$")
+
+
+class SearchQueryPatch(BaseModel):
+    nl_keywords: Optional[str] = None
+    en_keywords: Optional[str] = None
+    required_brands: Optional[list[str]] = None
+    excluded_brands: Optional[list[str]] = None
+    required_specs: Optional[list[str]] = None
+    relevance_threshold: Optional[int] = Field(default=None, ge=0, le=100)
 
 
 class SearchResponse(BaseModel):
@@ -33,8 +43,10 @@ class SearchResponse(BaseModel):
     relevance_threshold: int
     ranking_mode: str
     active: bool
+    query_enhanced: bool
     created_at: datetime
     last_run_at: Optional[datetime]
+    last_analyzed_at: Optional[datetime]
     result_count: int = 0
 
     model_config = {"from_attributes": True}
@@ -55,11 +67,36 @@ class ResultResponse(BaseModel):
     relevance_score: int
     deal_score: int
     quality_score: int
+    ai_score: Optional[int]
+    ai_flags: Optional[list[str]]
+    ai_reason: Optional[str]
+    image_urls: Optional[list[str]]
+    is_bidding: bool
     notified: bool
     seen: bool
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @field_validator("ai_flags", mode="before")
+    @classmethod
+    def parse_ai_flags(cls, v):
+        if isinstance(v, str):
+            return json.loads(v)
+        return v
+
+    @field_validator("image_urls", mode="before")
+    @classmethod
+    def parse_image_urls(cls, v):
+        if isinstance(v, str):
+            return json.loads(v)
+        return v
+
+
+class VerdictCreate(BaseModel):
+    ai_score: int = Field(..., ge=0, le=10)
+    ai_flags: list[str] = []
+    ai_reason: Optional[str] = None
 
 
 class FeedbackCreate(BaseModel):

@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import AsyncSessionLocal, get_db
 from ..feedback import parse_feedback as _parse_feedback_full
 from ..models import Search, Result, Feedback
-from ..schemas import SearchCreate, SearchResponse, ResultResponse, FeedbackCreate, FeedbackResponse
+from ..schemas import SearchCreate, SearchQueryPatch, SearchResponse, ResultResponse, FeedbackCreate, FeedbackResponse
 
 router = APIRouter(prefix="/api/searches", tags=["searches"])
 
@@ -27,27 +27,7 @@ async def list_searches(db: AsyncSession = Depends(get_db)):
     for s in searches:
         count_result = await db.execute(select(func.count(Result.id)).where(Result.search_id == s.id))
         count = count_result.scalar() or 0
-        sr = SearchResponse(
-            id=s.id,
-            query_text=s.query_text,
-            nl_keywords=s.nl_keywords,
-            en_keywords=s.en_keywords,
-            max_budget=s.max_budget,
-            radius_km=s.radius_km,
-            postcode=s.postcode,
-            max_age_years=s.max_age_years,
-            required_specs=s.required_specs,
-            required_brands=s.required_brands,
-            excluded_brands=s.excluded_brands,
-            exclude_business=s.exclude_business,
-            relevance_threshold=s.relevance_threshold,
-            ranking_mode=s.ranking_mode,
-            active=s.active,
-            created_at=s.created_at,
-            last_run_at=s.last_run_at,
-            result_count=count,
-        )
-        out.append(sr)
+        out.append(_build_search_response(s, count))
     return out
 
 
@@ -76,26 +56,22 @@ async def create_search(payload: SearchCreate, db: AsyncSession = Depends(get_db
         await trigger_immediate_run(search.id, AsyncSessionLocal)
     except Exception:
         pass  # Non-fatal — scheduled runs will pick it up
-    return SearchResponse(
-        id=search.id,
-        query_text=search.query_text,
-        nl_keywords=search.nl_keywords,
-        en_keywords=search.en_keywords,
-        max_budget=search.max_budget,
-        radius_km=search.radius_km,
-        postcode=search.postcode,
-        max_age_years=search.max_age_years,
-        required_specs=search.required_specs,
-        required_brands=search.required_brands,
-        excluded_brands=search.excluded_brands,
-        exclude_business=search.exclude_business,
-        relevance_threshold=search.relevance_threshold,
-        ranking_mode=search.ranking_mode,
-        active=search.active,
-        created_at=search.created_at,
-        last_run_at=search.last_run_at,
-        result_count=0,
+    return _build_search_response(search, 0)
+
+
+@router.get("/unenhanced", response_model=list[SearchResponse])
+async def get_unenhanced(db: AsyncSession = Depends(get_db)):
+    """Return active searches that have not yet had their query enhanced by AI."""
+    result = await db.execute(
+        select(Search).where(Search.active == True, Search.query_enhanced == False)
     )
+    searches = result.scalars().all()
+    out = []
+    for s in searches:
+        count_result = await db.execute(select(func.count(Result.id)).where(Result.search_id == s.id))
+        count = count_result.scalar() or 0
+        out.append(_build_search_response(s, count))
+    return out
 
 
 @router.get("/{search_id}", response_model=SearchResponse)
@@ -106,26 +82,7 @@ async def get_search(search_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Search not found")
     count_result = await db.execute(select(func.count(Result.id)).where(Result.search_id == search_id))
     count = count_result.scalar() or 0
-    return SearchResponse(
-        id=search.id,
-        query_text=search.query_text,
-        nl_keywords=search.nl_keywords,
-        en_keywords=search.en_keywords,
-        max_budget=search.max_budget,
-        radius_km=search.radius_km,
-        postcode=search.postcode,
-        max_age_years=search.max_age_years,
-        required_specs=search.required_specs,
-        required_brands=search.required_brands,
-        excluded_brands=search.excluded_brands,
-        exclude_business=search.exclude_business,
-        relevance_threshold=search.relevance_threshold,
-        ranking_mode=search.ranking_mode,
-        active=search.active,
-        created_at=search.created_at,
-        last_run_at=search.last_run_at,
-        result_count=count,
-    )
+    return _build_search_response(search, count)
 
 
 @router.delete("/{search_id}", status_code=204)
@@ -171,6 +128,15 @@ async def mark_seen(search_id: int, result_id: int, db: AsyncSession = Depends(g
     row.seen = True
     await db.commit()
     return {"ok": True}
+
+
+@router.post("/run-now", status_code=202)
+async def trigger_run_all():
+    """Trigger an immediate scrape run for all active searches."""
+    import asyncio
+    from ..scheduler import run_all_searches
+    asyncio.create_task(run_all_searches(AsyncSessionLocal))
+    return {"status": "triggered"}
 
 
 @router.post("/{search_id}/feedback", response_model=FeedbackResponse, status_code=201)
@@ -228,4 +194,60 @@ async def submit_feedback(
         created_at=fb.created_at,
     )
 
+
+@router.patch("/{search_id}/query", response_model=SearchResponse)
+async def patch_search_query(
+    search_id: int, payload: SearchQueryPatch, db: AsyncSession = Depends(get_db)
+):
+    """Apply AI-enhanced query parameters to a search and mark it as enhanced."""
+    result = await db.execute(select(Search).where(Search.id == search_id))
+    search = result.scalar_one_or_none()
+    if not search:
+        raise HTTPException(status_code=404, detail="Search not found")
+
+    if payload.nl_keywords is not None:
+        search.nl_keywords = payload.nl_keywords
+    if payload.en_keywords is not None:
+        search.en_keywords = payload.en_keywords
+    if payload.required_brands is not None:
+        search.required_brands = payload.required_brands
+    if payload.excluded_brands is not None:
+        search.excluded_brands = payload.excluded_brands
+    if payload.required_specs is not None:
+        search.required_specs = payload.required_specs
+    if payload.relevance_threshold is not None:
+        search.relevance_threshold = payload.relevance_threshold
+    search.query_enhanced = True
+
+    await db.commit()
+    await db.refresh(search)
+
+    count_result = await db.execute(select(func.count(Result.id)).where(Result.search_id == search_id))
+    count = count_result.scalar() or 0
+    return _build_search_response(search, count)
+
+
+def _build_search_response(s: Search, count: int) -> SearchResponse:
+    return SearchResponse(
+        id=s.id,
+        query_text=s.query_text,
+        nl_keywords=s.nl_keywords,
+        en_keywords=s.en_keywords,
+        max_budget=s.max_budget,
+        radius_km=s.radius_km,
+        postcode=s.postcode,
+        max_age_years=s.max_age_years,
+        required_specs=s.required_specs,
+        required_brands=s.required_brands,
+        excluded_brands=s.excluded_brands,
+        exclude_business=s.exclude_business,
+        relevance_threshold=s.relevance_threshold,
+        ranking_mode=s.ranking_mode,
+        active=s.active,
+        query_enhanced=s.query_enhanced,
+        created_at=s.created_at,
+        last_run_at=s.last_run_at,
+        last_analyzed_at=s.last_analyzed_at,
+        result_count=count,
+    )
 
