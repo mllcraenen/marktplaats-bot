@@ -99,23 +99,6 @@ class ResultResponse(BaseModel):
         return v
 
 
-class SearchMeta(BaseModel):
-    query_text: str
-    max_budget: Optional[float]
-    radius_km: int
-    exclude_business: bool
-    required_specs: list[str]
-    required_brands: list[str]
-    excluded_brands: list[str]
-
-    model_config = {"from_attributes": True}
-
-
-class ResultWithSearchResponse(ResultResponse):
-    """ResultResponse extended with search metadata — used by /api/listings/unanalyzed."""
-    search: SearchMeta
-
-
 class VerdictCreate(BaseModel):
     ai_score: int = Field(..., ge=0, le=10)
     ai_flags: list[str] = []

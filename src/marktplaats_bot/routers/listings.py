@@ -3,25 +3,21 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from ..database import get_db
 from ..models import Result, Search
-from ..schemas import ResultWithSearchResponse, ResultResponse, VerdictCreate
+from ..schemas import ResultResponse, VerdictCreate
 
 router = APIRouter(prefix="/api/listings", tags=["listings"])
 
 
-@router.get("/unanalyzed", response_model=list[ResultWithSearchResponse])
+@router.get("/unanalyzed", response_model=list[ResultResponse])
 async def get_unanalyzed(limit: int = 50, db: AsyncSession = Depends(get_db)):
-    """Return results awaiting an AI verdict, with search context for the evaluating agent."""
+    """Return results that have not yet received an AI verdict."""
     q = await db.execute(
-        select(Result)
-        .options(selectinload(Result.search))
-        .where(Result.ai_score.is_(None))
-        .limit(limit)
+        select(Result).where(Result.ai_score.is_(None)).limit(limit)
     )
-    return [ResultWithSearchResponse.model_validate(r) for r in q.scalars().all()]
+    return [ResultResponse.model_validate(r) for r in q.scalars().all()]
 
 
 @router.post("/{result_id}/verdict", response_model=ResultResponse)
